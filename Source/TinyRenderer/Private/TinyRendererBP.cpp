@@ -4,8 +4,12 @@
 #include "LegacyScreenPercentageDriver.h"
 #include "RenderGraphBuilder.h"
 #include "RenderGraphEvent.h"
+#include "TextureResource.h"
 #include "TinyRenderer.h"
+#include "Camera/CameraTypes.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
 UTinyRenderer::UTinyRenderer()
 {
@@ -21,7 +25,7 @@ UTinyRenderer* UTinyRenderer::CreateTinyRenderer(UObject* WorldContextObject,
 	}
 	UTinyRenderer* TinyRenderer = NewObject<UTinyRenderer>(WorldContextObject);
 	TinyRenderer->RenderTarget = RenderTarget;
-	
+
 	return TinyRenderer;
 }
 
@@ -29,6 +33,13 @@ void UTinyRenderer::SetStaticMesh(UStaticMesh* InStaticMesh, const int32 InLODIn
 {
 	StaticMesh = InStaticMesh;
 	LODIndex = InLODIndex;
+
+	OverrideMaterials.Empty();
+	OverrideMaterials.Reserve(StaticMesh->GetStaticMaterials().Num());
+	for (int32 MaterialIndex = 0; MaterialIndex < StaticMesh->GetStaticMaterials().Num(); ++MaterialIndex)
+	{
+		OverrideMaterials.Add(StaticMesh->GetMaterial(MaterialIndex));
+	}	
 }
 
 void UTinyRenderer::SetTransform(const FTransform& InTransform)
@@ -36,10 +47,52 @@ void UTinyRenderer::SetTransform(const FTransform& InTransform)
 	Transform = InTransform;
 }
 
+void UTinyRenderer::SetOverrideMaterial(UMaterialInterface* InMaterial, int32 InMaterialIndex)
+{
+	if (!StaticMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UTinyRenderer::SetOverrideMaterial: Invalid parameters"));
+		return;
+	}
+
+	if (InMaterialIndex >= StaticMesh->GetStaticMaterials().Num())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UTinyRenderer::SetOverrideMaterial: Invalid parameters"));
+		return;
+	}
+
+	if (OverrideMaterials.Num() <= InMaterialIndex)
+	{
+		OverrideMaterials.AddZeroed(InMaterialIndex - OverrideMaterials.Num() + 1);
+	}
+
+	if (InMaterial)
+	{
+		OverrideMaterials[InMaterialIndex] = InMaterial;
+	}
+}
+
+UMaterialInstanceDynamic* UTinyRenderer::CreateAndSetMaterialInstanceDynamic(UMaterialInterface* SourceMaterial,
+	const int32 MaterialIndex)
+{
+	UMaterialInterface* ParentMaterial = SourceMaterial ? SourceMaterial : OverrideMaterials[MaterialIndex].Get();
+
+	if (!ParentMaterial)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UTinyRenderer::CreateAndSetMaterialInstanceDynamic: Invalid parameters"));
+		return nullptr;
+	}
+
+	UMaterialInstanceDynamic* MaterialInstance = UMaterialInstanceDynamic::Create(ParentMaterial, this);
+	SetOverrideMaterial(MaterialInstance, MaterialIndex);
+
+	return MaterialInstance;
+}
+
 void UTinyRenderer::Render()
 {
 	SCOPED_NAMED_EVENT(UTinyRenderer_Render, FColor::Green);
-	
+
 	if (!StaticMesh || !RenderTarget)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UStaticMeshRenderBP::RenderStaticMesh: Invalid parameters"));
@@ -51,7 +104,8 @@ void UTinyRenderer::Render()
 
 
 	/* ViewFamily オブジェクトの作成 */
-	FSceneViewFamily::ConstructionValues ConstructionValues(RenderTargetResource, nullptr, FEngineShowFlags(ESFIM_Game));
+	FSceneViewFamily::ConstructionValues
+		ConstructionValues(RenderTargetResource, nullptr, FEngineShowFlags(ESFIM_Game));
 	ConstructionValues.SetTime(FGameTime::GetTimeSinceAppStart());
 	TUniquePtr<FSceneViewFamilyContext> ViewFamily = MakeUnique<FSceneViewFamilyContext>(ConstructionValues);
 
@@ -79,7 +133,7 @@ void UTinyRenderer::Render()
 	                                                              ViewInitOptions);
 
 	ENQUEUE_RENDER_COMMAND(FStaticMeshRenderCommand)(
-		[ViewFamily = MoveTemp(ViewFamily), LODIndex = LODIndex, ViewInitOptions, StaticMesh = StaticMesh, MeshTransform = Transform](
+		[this, ViewFamily = MoveTemp(ViewFamily), ViewInitOptions](
 		FRHICommandListImmediate& RHICmdList) mutable
 		{
 			SCOPED_NAMED_EVENT(FStaticMeshRenderCommand_Render, FColor::Green);
@@ -93,9 +147,10 @@ void UTinyRenderer::Render()
 			FRDGBuilder GraphBuilder(RHICmdList,
 			                         RDG_EVENT_NAME("StaticMeshRender"),
 			                         ERDGBuilderFlags::AllowParallelExecute);
+
 			/* StaticMesh の設定 */
-			Renderer.SetStaticMesh(StaticMesh, LODIndex, MeshTransform.ToMatrixWithScale());
-			
+			Renderer.SetStaticMeshData(StaticMesh, LODIndex, Transform.ToMatrixWithScale(), OverrideMaterials);
+
 			/* 作成したレンダラによる描画処理の登録 */
 			Renderer.Render(GraphBuilder);
 

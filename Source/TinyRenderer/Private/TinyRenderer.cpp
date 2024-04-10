@@ -10,7 +10,11 @@
 #include "MaterialDomain.h"
 #include "PrimitiveSceneShaderData.h"
 #include "PrimitiveUniformShaderParametersBuilder.h"
+#include "StaticMeshResources.h"
 #include "SystemTextures.h"
+#include "TRRenderingMeshData.h"
+#include "Engine/StaticMesh.h"
+#include "UnrealClient.h"
 #include "Runtime/Renderer/Private/SceneRendering.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogTinyRenderer, Log, All);
@@ -202,29 +206,26 @@ private:
 };
 
 /**
- * @param InStaticMesh MeshBatch を作成する StaticMesh
- * @param InLODIndex MeshBatch を作成する StaticMesh の LODIndex
  * @param InMeshBatches 作成した MeshBatch を格納する配列
  * @param RequiredFeatures MeshBatch が描画時に必要とする機能
  * @return MeshBatch が作成できた場合は true、それ以外は false
  */
-bool FTinyRenderer::CreateMeshBatch(UStaticMesh* InStaticMesh, const int32 InLODIndex,
-                                    TArray<FMeshBatch>& InMeshBatches,
+bool FTinyRenderer::CreateMeshBatch(TArray<FMeshBatch>& InMeshBatches,
                                     FMeshBatchesRequiredFeatures& RequiredFeatures) const
 {
-	SCOPED_NAMED_EVENT_F(TEXT("FTinyRenderer::CreateMeshBatch - %s"), FColor::Emerald, *InStaticMesh->GetName());
+	SCOPED_NAMED_EVENT_F(TEXT("FTinyRenderer::CreateMeshBatch - %s"), FColor::Emerald, *StaticMesh->GetName());
 
 	// StaticMesh がコンパイル中の場合は MeshBatch を作成しない
 	// Editor 用チェックであり、非 Editor ビルドでは定数化するので、最適化で消える
-	if (InStaticMesh->IsCompiling())
+	if (StaticMesh->IsCompiling())
 	{
 		return false;
 	}
 
 	// StaticMesh から RenderData を取得。ここに StaticMesh のメッシュデータが格納されている
-	FStaticMeshRenderData* RenderData = InStaticMesh->GetRenderData();
+	FStaticMeshRenderData* RenderData = StaticMesh->GetRenderData();
 
-	const int32 LODResourceIndex = FMath::Min(InLODIndex, RenderData->LODResources.Num() - 1);
+	const int32 LODResourceIndex = FMath::Min(LODIndex, RenderData->LODResources.Num() - 1);
 	if (LODResourceIndex < 0)
 	{
 		return false;
@@ -265,9 +266,16 @@ bool FTinyRenderer::CreateMeshBatch(UStaticMesh* InStaticMesh, const int32 InLOD
 		MeshBatch.SegmentIndex = SectionIndex;
 		MeshBatch.CastShadow = false;
 
+		const UMaterialInterface* OverrideMaterial = OverrideMaterials.IsValidIndex(Section.MaterialIndex)
+			                                             ? OverrideMaterials[Section.MaterialIndex].Get()
+			                                             : nullptr;
+
+		const UMaterialInterface* MaterialInterface = OverrideMaterial
+			                                              ? OverrideMaterial
+			                                              : StaticMesh->GetMaterial(Section.MaterialIndex);
+
 		// マテリアルを取得
-		if (const UMaterialInterface* MaterialInterface = InStaticMesh->GetMaterial(Section.MaterialIndex);
-			BatchElement.NumPrimitives > 0 && MaterialInterface != nullptr)
+		if (BatchElement.NumPrimitives > 0 && MaterialInterface)
 		{
 			const auto MaterialProxy = MaterialInterface->GetRenderProxy();
 			// マテリアルのレンダースレッド表現である MaterialRenderProxy を MeshBatch に MaterialRenderProxy を格納
@@ -307,7 +315,8 @@ FGPUSceneResourceParameters FTinyRenderer::SetupGPUSceneResourceParameters(FRDGB
 	                                                          .ActorWorldPosition(LocalToWorld.GetOrigin())
 	                                                          .CastShadow(false)
 	                                                          .CastContactShadow(false)
-	                                                          .EvaluateWorldPositionOffset(RequiredFeatures.bWorldPositionOffset)
+	                                                          .EvaluateWorldPositionOffset(
+		                                                          RequiredFeatures.bWorldPositionOffset)
 	                                                          .Build();
 	const FPrimitiveSceneShaderData PrimitiveSceneData(PrimitiveParams);
 
@@ -399,11 +408,16 @@ FTinyRenderer::FTinyRenderer(const FSceneViewFamily& InViewFamily)
 {
 }
 
-void FTinyRenderer::SetStaticMesh(UStaticMesh* InStaticMesh, const int32 InLODIndex, const FMatrix& InTransform)
+void FTinyRenderer::SetStaticMeshData(UStaticMesh* InStaticMesh, const int32 InLODIndex, const FMatrix& InLocalToWorld,
+                                      const TArray<UMaterialInterface*>& InOverrideMaterials)
 {
 	StaticMesh = InStaticMesh;
-	LocalToWorld = InTransform;
+	LocalToWorld = InLocalToWorld;
 	LODIndex = InLODIndex;
+	Algo::Transform(InOverrideMaterials, OverrideMaterials, [](UMaterialInterface* InMaterial) -> TWeakObjectPtr<UMaterialInterface>
+	{
+		return InMaterial;
+	});
 }
 
 void FTinyRenderer::Render(FRDGBuilder& GraphBuilder)
@@ -451,7 +465,7 @@ void FTinyRenderer::RenderBasePass(FRDGBuilder& GraphBuilder, const FTinySceneTe
 	// StaticMesh から MeshBatch を作成
 	TArray<FMeshBatch> MeshBatches;
 	FMeshBatchesRequiredFeatures RequiredFeatures;
-	if (!CreateMeshBatch(Mesh, LODIndex, MeshBatches, RequiredFeatures))
+	if (!CreateMeshBatch(MeshBatches, RequiredFeatures))
 	{
 		UE_LOG(LogTinyRenderer, Warning, TEXT("Failed to create mesh batch"));
 		return;

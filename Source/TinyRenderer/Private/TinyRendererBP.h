@@ -4,6 +4,8 @@
 #include "UObject/Object.h"
 #include "TinyRendererBP.generated.h"
 
+class UTRPrimitiveReference;
+
 UCLASS(BlueprintType)
 class UTinyRenderer : public UObject
 {
@@ -24,6 +26,12 @@ public:
 	void SetTransform(const FTransform& InTransform);
 
 	UFUNCTION(BlueprintCallable, Category = "Static Mesh Renderer")
+	void SetOverrideMaterial(UMaterialInterface* InMaterial, int32 InMaterialIndex);
+
+	UFUNCTION(BlueprintCallable, Category = "Static Mesh Renderer")
+	UMaterialInstanceDynamic* CreateAndSetMaterialInstanceDynamic(UMaterialInterface* SourceMaterial, const int32 MaterialIndex);
+
+	UFUNCTION(BlueprintCallable, Category = "Static Mesh Renderer")
 	void Render();
 
 	UPROPERTY(BlueprintReadWrite, Category = "Static Mesh Renderer")
@@ -39,4 +47,7 @@ private:
 	FTransform Transform;
 	
 	int32 LODIndex;
+
+	UPROPERTY()
+	TArray<TObjectPtr<UMaterialInterface>> OverrideMaterials;
 };
