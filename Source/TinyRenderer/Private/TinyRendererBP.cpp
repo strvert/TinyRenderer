@@ -25,11 +25,15 @@ UTinyRenderer* UTinyRenderer::CreateTinyRenderer(UObject* WorldContextObject,
 	return TinyRenderer;
 }
 
-void UTinyRenderer::SetStaticMesh(UStaticMesh* InStaticMesh, const int32 InLODIndex, const FTransform& InTransform)
+void UTinyRenderer::SetStaticMesh(UStaticMesh* InStaticMesh, const int32 InLODIndex)
 {
 	StaticMesh = InStaticMesh;
-	Transform = InTransform;
 	LODIndex = InLODIndex;
+}
+
+void UTinyRenderer::SetTransform(const FTransform& InTransform)
+{
+	Transform = InTransform;
 }
 
 void UTinyRenderer::Render()

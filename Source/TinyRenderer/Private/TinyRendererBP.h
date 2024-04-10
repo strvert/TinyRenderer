@@ -18,7 +18,10 @@ public:
 	                                         UTextureRenderTarget2D* RenderTarget);
 
 	UFUNCTION(BlueprintCallable, Category = "Static Mesh Renderer")
-	void SetStaticMesh(UStaticMesh* InStaticMesh, const int32 LODIndex, const FTransform& InTransform);
+	void SetStaticMesh(UStaticMesh* InStaticMesh, const int32 LODIndex);
+
+	UFUNCTION(BlueprintCallable, Category = "Static Mesh Renderer", meta = (AutoCreateRefTerm = "InTransform"))
+	void SetTransform(const FTransform& InTransform);
 
 	UFUNCTION(BlueprintCallable, Category = "Static Mesh Renderer")
 	void Render();
