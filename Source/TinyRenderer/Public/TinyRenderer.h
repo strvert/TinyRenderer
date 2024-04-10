@@ -30,8 +30,8 @@ private:
 	FTinySceneTextures SetupSceneTextures(FRDGBuilder& GraphBuilder) const;
 	void RenderBasePass(FRDGBuilder& GraphBuilder, const FTinySceneTextures& SceneTextures);
 
-	bool CreateMeshBatch(TArray<FMeshBatch>& InMeshBatches,
-	                     FMeshBatchesRequiredFeatures& RequiredFeatures) const;
+	bool CreateMeshBatch(TArray<FMeshBatch>& OutMeshBatches,
+	                     FMeshBatchesRequiredFeatures& OutRequiredFeatures) const;
 
 	FGPUSceneResourceParameters SetupGPUSceneResourceParameters(FRDGBuilder& GraphBuilder,
 	                                                            const FMeshBatchesRequiredFeatures& RequiredFeatures)

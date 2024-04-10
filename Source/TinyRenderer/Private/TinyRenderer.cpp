@@ -206,12 +206,12 @@ private:
 };
 
 /**
- * @param InMeshBatches 作成した MeshBatch を格納する配列
- * @param RequiredFeatures MeshBatch が描画時に必要とする機能
+ * @param OutMeshBatches 作成した MeshBatch を格納する配列
+ * @param OutRequiredFeatures MeshBatch が描画時に必要とする機能
  * @return MeshBatch が作成できた場合は true、それ以外は false
  */
-bool FTinyRenderer::CreateMeshBatch(TArray<FMeshBatch>& InMeshBatches,
-                                    FMeshBatchesRequiredFeatures& RequiredFeatures) const
+bool FTinyRenderer::CreateMeshBatch(TArray<FMeshBatch>& OutMeshBatches,
+                                    FMeshBatchesRequiredFeatures& OutRequiredFeatures) const
 {
 	SCOPED_NAMED_EVENT_F(TEXT("FTinyRenderer::CreateMeshBatch - %s"), FColor::Emerald, *StaticMesh->GetName());
 
@@ -280,18 +280,18 @@ bool FTinyRenderer::CreateMeshBatch(TArray<FMeshBatch>& InMeshBatches,
 			const auto MaterialProxy = MaterialInterface->GetRenderProxy();
 			// マテリアルのレンダースレッド表現である MaterialRenderProxy を MeshBatch に MaterialRenderProxy を格納
 			MeshBatch.MaterialRenderProxy = MaterialProxy;
-			InMeshBatches.Add(MeshBatch);
+			OutMeshBatches.Add(MeshBatch);
 
 			const FMaterialRelevance& MaterialRelevance = MaterialInterface->GetRelevance_Concurrent(FeatureLevel);
 			// マテリアルが利用を要求しているレンダリング機能を RequiredFeatures に格納
 			if (MaterialRelevance.bUsesWorldPositionOffset)
 			{
-				RequiredFeatures.bWorldPositionOffset = true;
+				OutRequiredFeatures.bWorldPositionOffset = true;
 			}
 		}
 	}
 
-	if (InMeshBatches.IsEmpty())
+	if (OutMeshBatches.IsEmpty())
 	{
 		return false;
 	}
