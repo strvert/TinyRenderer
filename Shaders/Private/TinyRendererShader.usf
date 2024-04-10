@@ -1,0 +1,147 @@
+#define SUPPORT_CONTACT_SHADOWS 0
+
+#include "/Engine/Private/BasePassCommon.ush"
+#include "/Engine/Generated/Material.ush"
+#include "/Engine/Private/ShadingModelsMaterial.ush"
+#include "/Engine/Generated/VertexFactory.ush"
+#include "/Engine/Private/DeferredLightingCommon.ush"
+
+/* Vertex Shader から Pixel Shader へ受け渡すデータ */
+struct FTinyRendererVSToPS
+{
+	float4 Position : SV_POSITION;
+	float4 PixelPosition : POSITION8;
+	FVertexFactoryInterpolantsVSToPS FactoryInterpolants;
+};
+
+/* Vertex Shader */
+void MainVS(FVertexFactoryInput Input, out FTinyRendererVSToPS Output)
+{
+	ResolvedView = ResolveView();
+
+	/* GPUScene から現在の処理対象のインスタンスの情報を取得 */
+	FVertexFactoryIntermediates VFIntermediates = GetVertexFactoryIntermediates(Input);
+	
+	/* InstanceCullingData を Off にしていると、以下のフラグが常に false になってしまい、マテリアルが要求しても WPO が評価されない */
+	/* このフラグが true でも、マテリアルが要求していない場合は WPO は評価されないので負荷の心配は不要 */
+	VFIntermediates.bEvaluateWorldPositionOffset = true;
+	
+	const float4 WorldPositionExcludingWPO = VertexFactoryGetWorldPosition(Input, VFIntermediates);
+	float4 WorldPos = WorldPositionExcludingWPO;
+	
+	const float3x3 TangentToLocal = VertexFactoryGetTangentToLocal(Input, VFIntermediates);
+
+	/* マテリアルが生成した VertexShader 用のコードを呼び出し、結果を取得 */
+	FMaterialVertexParameters VertexParameters = GetMaterialVertexParameters(Input, VFIntermediates, WorldPos.xyz, TangentToLocal);
+
+	/* マテリアルが生成した WorldPositionOffset を適用 */
+	WorldPos.xyz += GetMaterialWorldPositionOffset(VertexParameters);
+
+	/* PixelShader に渡すデータを設定 */
+	Output.Position = INVARIANT(mul(WorldPos, ResolvedView.TranslatedWorldToClip));
+	Output.PixelPosition = WorldPos;
+	Output.FactoryInterpolants = VertexFactoryGetInterpolantsVSToPS(Input, VFIntermediates, VertexParameters);
+}
+
+FLightAccumulator LightAccumulator_SimpleAdd(FLightAccumulator A, FLightAccumulator B)
+{
+	FLightAccumulator Sum = (FLightAccumulator)0;
+	Sum.TotalLight = A.TotalLight + B.TotalLight;
+	Sum.ScatterableLightLuma = A.ScatterableLightLuma + B.ScatterableLightLuma;
+	Sum.ScatterableLight = A.ScatterableLight + B.ScatterableLight;
+	Sum.EstimatedCost = A.EstimatedCost + B.EstimatedCost;
+	Sum.TotalLightDiffuse = A.TotalLightDiffuse + B.TotalLightDiffuse;
+	Sum.TotalLightSpecular = A.TotalLightSpecular + B.TotalLightSpecular;
+	return Sum;
+}
+
+
+void MainPS(
+	in FTinyRendererVSToPS Interpolants,
+	out float4 OutColor : SV_Target0
+	OPTIONAL_IsFrontFace)
+{
+	ResolvedView = ResolveView();
+
+	float3 WorldPosition = Interpolants.PixelPosition.xyz;
+
+	/* マテリアルが生成した PixelShader 用のコードを呼び出し、結果を取得 */
+	FMaterialPixelParameters MaterialParameters = GetMaterialPixelParameters(
+		Interpolants.FactoryInterpolants, Interpolants.Position);
+	FPixelMaterialInputs PixelMaterialInputs;
+	{
+		/* スクリーン座標系の位置を取得 */
+		float4 ScreenPosition = SvPositionToResolvedScreenPosition(Interpolants.Position);
+		/* マテリアルから更に追加のパラメータを取得 */
+		CalcMaterialParametersEx(MaterialParameters, PixelMaterialInputs, Interpolants.Position, ScreenPosition, bIsFrontFace,
+		                         WorldPosition, WorldPosition);
+	}
+
+	/* マテリアルの各種出力を取得 */
+	GetMaterialCoverageAndClipping(MaterialParameters, PixelMaterialInputs);
+	half Opacity = GetMaterialOpacity(PixelMaterialInputs);
+	half3 BaseColor = GetMaterialBaseColor(PixelMaterialInputs);
+	half Metallic = GetMaterialMetallic(PixelMaterialInputs);
+	half Specular = GetMaterialSpecular(PixelMaterialInputs);
+	half Roughness = max(0.015625f, GetMaterialRoughness(PixelMaterialInputs));
+	float Anisotropy = GetMaterialAnisotropy(PixelMaterialInputs);
+	uint ShadingModelID = GetMaterialShadingModel(PixelMaterialInputs);
+
+	/* GBuffer (という名前の構造体) にマテリアルの各種出力を設定。テクスチャリソースとしての GBuffer はここでは使われていないので注意 */
+	FGBufferData GBuffer = (FGBufferData)0;
+	GBuffer.Depth = MaterialParameters.ScreenPosition.w;
+
+	SetGBufferForShadingModel(
+		GBuffer,
+		MaterialParameters,
+		Opacity,
+		BaseColor,
+		Metallic,
+		Specular,
+		Roughness,
+		Anisotropy,
+		0.0f,
+		0.0f,
+		0.0f,
+		ShadingModelID);
+
+	/* スペキュラカラーやディフューズカラーを計算 */
+	GBuffer.SpecularColor = ComputeF0(GBuffer.Specular, GBuffer.BaseColor, GBuffer.Metallic);
+	GBuffer.DiffuseColor = GBuffer.BaseColor - GBuffer.BaseColor * GBuffer.Metallic;
+	{
+		GBuffer.DiffuseColor = GBuffer.DiffuseColor * ResolvedView.DiffuseOverrideParameter.w + ResolvedView.
+			DiffuseOverrideParameter.xyz;
+		GBuffer.SpecularColor = GBuffer.SpecularColor * ResolvedView.SpecularOverrideParameter.w + ResolvedView.
+			SpecularOverrideParameter.xyz;
+	}
+
+	half3 CameraVector = -MaterialParameters.CameraVector;
+	float DirectionalLightShadow = 1.0f;
+
+	/* Directional Light の設定 */
+	FDeferredLightData LightData = (FDeferredLightData)0;
+	{
+		LightData.Color = float3(1, 1, 1) * 2.14f;
+		LightData.FalloffExponent = 0;
+		LightData.Direction = float3(-0.5, -0.8, 0.5);
+		LightData.bRadialLight = false;
+		LightData.SpecularScale = 1.5f;
+		LightData.ShadowedBits = 0;
+		LightData.HairTransmittance = InitHairTransmittanceData();
+	}
+	half4 LightAttenuation = 1.0f;
+	/* ライティングを計算 */
+	FLightAccumulator DirectionalLighting = AccumulateDynamicLighting(WorldPosition, CameraVector, GBuffer,
+	                                                          1, ShadingModelID, LightData,
+	                                                          LightAttenuation, 0, uint2(0, 0),
+	                                                          DirectionalLightShadow);
+	/* ライティング結果を取得 + 簡易環境光を加算 */
+	half3 Color = DirectionalLighting.TotalLight + GBuffer.DiffuseColor * 0.08f;
+
+	/* 最後にエミッシブカラーを加算 */
+	half3 Emissive = GetMaterialEmissive(PixelMaterialInputs);
+	Color += Emissive;
+
+	/* 最終的な色を出力。 */
+	OutColor = float4(Color.rgb, 1.0f);
+}
